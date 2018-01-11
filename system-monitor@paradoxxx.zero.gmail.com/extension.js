@@ -44,7 +44,14 @@ const Me = ExtensionUtils.getCurrentExtension();
 const Convenience = Me.imports.convenience;
 const Compat = Me.imports.compat;
 
-let Background, GTop, IconSize, Locale, MountsMonitor, NM, NetworkManager, Schema, StatusArea, Style, gc_timeout, menu_timeout;
+let Background, GTop, IconSize, Locale, MountsMonitor, NM, NetworkManager, PanelBox, Schema, StatusArea, Style, gc_timeout, menu_timeout;
+
+const Position = {
+    RIGHT: 0,
+    CENTER: 1,
+    LEFT: 2
+}
+let positionId = 0;
 
 try {
     GTop = imports.gi.GTop;
@@ -2218,6 +2225,21 @@ const Icon = new Lang.Class({
     }
 });
 
+function reposition() {
+    switch (Schema.get_enum('panel-position')) {
+    case Position.CENTER:
+        PanelBox = Main.panel._centerBox;
+        break;
+    case Position.LEFT:
+        PanelBox = Main.panel._leftBox;
+        break;
+    default:
+        PanelBox = Main.panel._rightBox;
+        break;
+    }
+
+    Main.panel._addToPanelBox('system-monitor', Main.__sm.tray, 1, PanelBox);
+}
 
 var init = function () {
     log('System monitor applet init from ' + extension.path);
@@ -2255,13 +2277,23 @@ var enable = function () {
                 return true;
             });
     } else {
-        let panel = Main.panel._rightBox;
+        switch (Schema.get_enum('panel-position')) {
+        case Position.CENTER:
+            PanelBox = Main.panel._centerBox;
+            break;
+        case Position.LEFT:
+            PanelBox = Main.panel._leftBox;
+            break;
+        default:
+            PanelBox = Main.panel._rightBox;
+            break;
+        }
+        positionId = Schema.connect('changed::panel-position', function () {
+            reposition();
+        });
         StatusArea = Main.panel._statusArea;
         if (typeof (StatusArea) === 'undefined') {
             StatusArea = Main.panel.statusArea;
-        }
-        if (Schema.get_boolean('center-display')) {
-            panel = Main.panel._centerBox;
         }
 
         MountsMonitor.connect();
@@ -2296,11 +2328,11 @@ var enable = function () {
             if (Compat.versionCompare(shell_Version, '3.5.90')) {
                 dateMenu = Main.panel.statusArea.dateMenu;
                 Main.panel._centerBox.remove_actor(dateMenu.container);
-                Main.panel._addToPanelBox('dateMenu', dateMenu, -1, Main.panel._rightBox);
+                Main.panel._addToPanelBox('dateMenu', dateMenu, -1, PanelBox);
             } else {
                 dateMenu = Main.panel._dateMenu;
                 Main.panel._centerBox.remove_actor(dateMenu.actor);
-                Main.panel._rightBox.insert_child_at_index(dateMenu.actor, -1);
+                PanelBox.insert_child_at_index(dateMenu.actor, -1);
             }
             tray.clockMoved = true;
         }
@@ -2311,10 +2343,10 @@ var enable = function () {
             }));
         if (!Compat.versionCompare(shell_Version, '3.5.5')) {
             StatusArea.systemMonitor = tray;
-            panel.insert_child_at_index(tray.actor, 1);
-            panel.child_set(tray.actor, {y_fill: true});
+            PanelBox.insert_child_at_index(tray.actor, 1);
+            PanelBox.child_set(tray.actor, {y_fill: true});
         } else {
-            Main.panel._addToPanelBox('system-monitor', tray, 1, panel);
+            Main.panel._addToPanelBox('system-monitor', tray, 1, PanelBox);
         }
 
         // The spacing adds a distance between the graphs/text on the top bar
@@ -2405,11 +2437,11 @@ var disable = function () {
         let dateMenu;
         if (Compat.versionCompare(shell_Version, '3.5.90')) {
             dateMenu = Main.panel.statusArea.dateMenu;
-            Main.panel._rightBox.remove_actor(dateMenu.container);
+            PanelBox.remove_actor(dateMenu.container);
             Main.panel._addToPanelBox('dateMenu', dateMenu, Main.sessionMode.panel.center.indexOf('dateMenu'), Main.panel._centerBox);
         } else {
             dateMenu = Main.panel._dateMenu;
-            Main.panel._rightBox.remove_actor(dateMenu.actor);
+            PanelBox.remove_actor(dateMenu.actor);
             Main.panel._centerBox.insert_child_at_index(dateMenu.actor, 0);
         }
     }
@@ -2425,6 +2457,7 @@ var disable = function () {
 
     MountsMonitor.disconnect();
 
+    Schema.disconnect(positionId);
     Schema.run_dispose();
     for (let eltName in Main.__sm.elts) {
         Main.__sm.elts[eltName].destroy();
