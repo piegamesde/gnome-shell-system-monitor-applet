@@ -1501,10 +1501,11 @@ const Freq = new Lang.Class({
     elt: 'freq',
     item_name: _('Freq'),
     color_name: ['freq'],
+    _process_stream: [],
+    _process_sourceId: [],
     cpuid: 0,
     _init: function (cpuid) {
         this.item_name = _('Freq') + (cpuid < 0 ? '' : ' ' + (cpuid + 1));
-        this.cpuid = cpuid;
         this.freq = 0;
         if (GLib.file_test('/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq', 1 << 4)) {
             this.fixed_freq = -1;
@@ -1515,20 +1516,28 @@ const Freq = new Lang.Class({
         }
         this.parent()
         this.tip_format('MHz');
+        this._num_cpus = GTop.glibtop_get_sysinfo().ncpu;
         this.update();
     },
     refresh: function () {
+        this._counter = 0;
+        this._frequencyCounter = 0;
         if (this.fixed_freq < 0 && this.cpuid < 0) {
             let total_frequency = 0;
             let num_cpus = Math.min(GTop.glibtop_get_sysinfo().ncpu, 4);
             for (let i = 0; i < num_cpus; i++) {
-                total_frequency += this.get_cpufreq('scaling_cur_freq', i);
+                this._readAsync(i);
             }
-            this.freq = Math.round(total_frequency / num_cpus);
         } else if (this.fixed_freq < 0) {
             this.freq = this.get_cpufreq('scaling_cur_freq', this.cpuid);
         } else {
             this.freq = this.fixed_freq;
+        }
+    },
+    _finishRefresh: function() {
+        this._counter++;
+        if (this._counter == GTop.glibtop_get_sysinfo().ncpu) {
+            this.freq = Math.round(this._frequencyCounter / this._num_cpus / 1000);
         }
     },
     _apply: function () {
@@ -1577,6 +1586,71 @@ const Freq = new Lang.Class({
             cnt--;
         }
         return 0;
+    },
+    _readAsync: function(index) {
+        let filename = '/sys/devices/system/cpu/cpu' + index + '/cpufreq/scaling_cur_freq';
+
+        // Run asynchronously, to avoid shell freeze - even for a 1s check
+        try {
+            let script = ['/bin/cat', filename];
+            let [, pid, , out_fd, ] = GLib.spawn_async_with_pipes(
+                null,
+                script,
+                null,
+                GLib.SpawnFlags.DO_NOT_REAP_CHILD,
+                null
+            );
+
+            // Let's buffer the command's output - that's an input for us !
+            this._process_stream[index] = new Gio.DataInputStream({
+                base_stream: new Gio.UnixInputStream({fd: out_fd})
+            });
+
+            // We will process the output at once when it's done
+            this._process_sourceId[index] = GLib.child_watch_add(
+                0,
+                pid,
+                Lang.bind(
+                    this,
+                    function() {
+                        this._freqRead(index);
+                    }
+                )
+            );
+        } catch (err) {
+        }
+    },
+
+    _freqRead: function(index) {
+        // Reset the frequency
+        let out, size;
+        let frequency = 0;
+        if (this._process_stream[index]) {
+            do {
+                [out, size] = this._process_stream[index].read_line_utf8(null);
+                if (out) frequency = parseInt(out);
+            } while (out);
+        }
+
+        this._frequencyCounter += frequency;
+
+        this._asyncEnd(index);
+    },
+
+    _asyncEnd: function(index) {
+        // Free resources
+        if (this._process_stream[index]) {
+            this._process_stream[index].close(null);
+            this._process_stream[index] = null;
+        }
+        if (this._process_sourceId[index])
+            GLib.source_remove(this._process_sourceId[index]);
+        this._process_sourceId[index] = null;
+
+        // Finally update frequency value for graph
+        this._finishRefresh();
+
+        return GLib.SOURCE_REMOVE;
     }
 });
 
